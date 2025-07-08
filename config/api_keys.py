@@ -30,6 +30,12 @@ FMP_API_KEY = os.getenv('FMP_API_KEY')
 # Alpha Vantage - 25 requests/day FREE  
 ALPHA_VANTAGE_KEY = os.getenv('ALPHA_VANTAGE_KEY')
 
+# Finnhub - 60 calls/minute FREE
+FINNHUB_KEY = os.getenv('FINNHUB_KEY')
+
+# Polygon.io - 2 calls/minute FREE
+POLYGON_API_KEY = os.getenv('POLYGON_API_KEY')
+
 # ============================================================================
 # AI INTEGRATION
 # ============================================================================
@@ -50,4 +56,3 @@ PAPER_TRADING_MODE = os.getenv('PAPER_TRADING_MODE', 'true').lower() == 'true'
 LIVE_TRADING_ENABLED = os.getenv('LIVE_TRADING_ENABLED', 'false').lower() == 'true'
 RISK_LIMIT_PER_TRADE = float(os.getenv('RISK_LIMIT_PER_TRADE', '0.02'))
 MAX_DAILY_TRADES = int(os.getenv('MAX_DAILY_TRADES', '50'))
-

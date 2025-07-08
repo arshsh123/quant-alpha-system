@@ -1,4 +1,4 @@
-"""Advanced multi-signal combination and normalization system."""
+"""Complete Advanced multi-signal combination and normalization system."""
 
 import asyncio
 import numpy as np
@@ -17,10 +17,35 @@ project_root = Path(__file__).parent.parent
 sys.path.append(str(project_root))
 
 from config.settings import SIGNAL_PROCESSING, MARKET_REGIMES, RISK_MANAGEMENT
-from data_sources.social_sentiment.twitter_monitor import twitter_monitor
-from data_sources.social_sentiment.news_monitor import news_monitor
-from data_sources.earnings_signals.earnings_monitor import earnings_monitor
-from data_sources.options_flow.options_monitor import options_monitor
+
+# Import monitors with error handling
+try:
+    from data_sources.social_sentiment.twitter_monitor import twitter_monitor
+    TWITTER_AVAILABLE = True
+except ImportError:
+    twitter_monitor = None
+    TWITTER_AVAILABLE = False
+
+try:
+    from data_sources.social_sentiment.news_monitor import news_monitor
+    NEWS_AVAILABLE = True
+except ImportError:
+    news_monitor = None
+    NEWS_AVAILABLE = False
+
+try:
+    from data_sources.earnings_signals.earnings_monitor import earnings_monitor
+    EARNINGS_AVAILABLE = True
+except ImportError:
+    earnings_monitor = None
+    EARNINGS_AVAILABLE = False
+
+try:
+    from data_sources.options_flow.options_monitor import options_monitor
+    OPTIONS_AVAILABLE = True
+except ImportError:
+    options_monitor = None
+    OPTIONS_AVAILABLE = False
 
 logger = logging.getLogger(__name__)
 
@@ -43,7 +68,7 @@ class TradeAction(Enum):
 
 @dataclass
 class NormalizedSignal:
-    """Normalized signal structure."""
+    """Enhanced normalized signal structure with decay and confidence."""
     signal_type: SignalType
     ticker: str
     value: float  # Normalized between -1 and 1
@@ -52,10 +77,30 @@ class NormalizedSignal:
     timestamp: datetime
     raw_data: Dict
     decay_half_life_hours: float = 4.0
+    
+    def get_decayed_value(self, current_time: datetime = None) -> float:
+        """Calculate current value after time decay."""
+        if current_time is None:
+            current_time = datetime.now()
+        
+        age_hours = (current_time - self.timestamp).total_seconds() / 3600
+        decay_factor = 0.5 ** (age_hours / self.decay_half_life_hours)
+        
+        return self.value * decay_factor
+    
+    def get_decayed_confidence(self, current_time: datetime = None) -> float:
+        """Calculate current confidence after time decay."""
+        if current_time is None:
+            current_time = datetime.now()
+        
+        age_hours = (current_time - self.timestamp).total_seconds() / 3600
+        decay_factor = 0.5 ** (age_hours / self.decay_half_life_hours)
+        
+        return self.confidence * decay_factor
 
 @dataclass
 class CombinedSignal:
-    """Combined signal output."""
+    """Enhanced combined signal output."""
     ticker: str
     final_score: float  # -1 to 1
     confidence: float  # 0 to 1
@@ -68,19 +113,53 @@ class CombinedSignal:
     stop_loss_target: Optional[float]
     take_profit_target: Optional[float]
     timestamp: datetime
-    
+    signal_conflicts: List[str]  # Track conflicting signals
+    dynamic_weights: Dict[SignalType, float]  # Actual weights used
+
 class SignalCombiner:
-    """Advanced multi-signal combination engine."""
+    """Complete enhanced multi-signal combination engine."""
     
     def __init__(self):
         self.signal_cache = {}  # ticker -> List[NormalizedSignal]
         self.market_regime = "normal"
-        self.signal_weights = self._get_base_weights()
+        self.base_weights = self._get_base_weights()
+        self.signal_performance_history = {}  # Track signal performance for dynamic weighting
         self.price_cache = {}  # ticker -> recent price data
         self.volume_cache = {}  # ticker -> recent volume data
         
+        # Signal decay rates (hours for 50% decay)
+        self.decay_rates = {
+            SignalType.SOCIAL_SENTIMENT: 2.0,     # Fast decay - Twitter sentiment
+            SignalType.NEWS_SENTIMENT: 6.0,       # Medium decay - News impact
+            SignalType.EARNINGS_SURPRISE: 48.0,   # Slow decay - Earnings effects
+            SignalType.OPTIONS_FLOW: 8.0,         # Medium-fast decay
+            SignalType.TECHNICAL_MOMENTUM: 12.0   # Medium decay
+        }
+        
+        # Confidence scoring parameters
+        self.confidence_params = {
+            SignalType.SOCIAL_SENTIMENT: {
+                'volume_weight': 0.3,
+                'source_credibility_weight': 0.4,
+                'consensus_weight': 0.3
+            },
+            SignalType.NEWS_SENTIMENT: {
+                'source_credibility_weight': 0.5,
+                'urgency_weight': 0.3,
+                'specificity_weight': 0.2
+            },
+            SignalType.EARNINGS_SURPRISE: {
+                'magnitude_weight': 0.6,
+                'consistency_weight': 0.4
+            }
+        }
+        
+        logger.info(f"📊 Signal Combiner initialized with components: "
+                   f"Twitter={TWITTER_AVAILABLE}, News={NEWS_AVAILABLE}, "
+                   f"Earnings={EARNINGS_AVAILABLE}, Options={OPTIONS_AVAILABLE}")
+        
     def _get_base_weights(self) -> Dict[SignalType, float]:
-        """Get base signal weights (will be adjusted by market regime)."""
+        """Get base signal weights (will be adjusted dynamically)."""
         return {
             SignalType.SOCIAL_SENTIMENT: 0.40,
             SignalType.NEWS_SENTIMENT: 0.20,
@@ -122,6 +201,9 @@ class SignalCombiner:
     async def _collect_social_signals(self):
         """Collect and normalize social sentiment signals."""
         try:
+            if not TWITTER_AVAILABLE or not twitter_monitor:
+                return
+                
             # Get Twitter signals
             twitter_signals = twitter_monitor.get_current_signals()
             
@@ -137,6 +219,9 @@ class SignalCombiner:
     async def _collect_news_signals(self):
         """Collect and normalize news sentiment signals."""
         try:
+            if not NEWS_AVAILABLE or not news_monitor:
+                return
+                
             # Get news signals
             news_signals = news_monitor.get_current_signals()
             
@@ -152,6 +237,9 @@ class SignalCombiner:
     async def _collect_earnings_signals(self):
         """Collect and normalize earnings signals."""
         try:
+            if not EARNINGS_AVAILABLE or not earnings_monitor:
+                return
+                
             # Get upcoming earnings for pre-positioning
             upcoming_earnings = earnings_monitor.get_upcoming_earnings(3)
             
@@ -173,6 +261,9 @@ class SignalCombiner:
     async def _collect_options_signals(self):
         """Collect and normalize options flow signals."""
         try:
+            if not OPTIONS_AVAILABLE or not options_monitor:
+                return
+                
             # Get options signals
             options_signals = options_monitor.get_current_signals()
             
@@ -212,7 +303,7 @@ class SignalCombiner:
             confidence = min(
                 signal.urgency_score + 
                 (signal.followers / 1000000) * 0.1 +  # Follower influence
-                len(signal.mentioned_tickers) * 0.05,  # Multiple tickers = less focused
+                (1.0 / max(len(signal.mentioned_tickers), 1)) * 0.05,  # Single ticker focus
                 1.0
             )
             
@@ -223,7 +314,8 @@ class SignalCombiner:
                 confidence=confidence,
                 urgency=signal.urgency_score,
                 timestamp=signal.timestamp,
-                raw_data=asdict(signal)
+                raw_data=asdict(signal),
+                decay_half_life_hours=self.decay_rates[SignalType.SOCIAL_SENTIMENT]
             )
             
         except Exception as e:
@@ -263,7 +355,7 @@ class SignalCombiner:
                 urgency=signal.urgency_score,
                 timestamp=signal.timestamp,
                 raw_data=asdict(signal),
-                decay_half_life_hours=6.0  # News has longer half-life
+                decay_half_life_hours=self.decay_rates[SignalType.NEWS_SENTIMENT]
             )
             
         except Exception as e:
@@ -291,7 +383,7 @@ class SignalCombiner:
                 urgency=0.9,  # Earnings are always urgent
                 timestamp=signal.timestamp,
                 raw_data=asdict(signal),
-                decay_half_life_hours=48.0  # Earnings effects last longer
+                decay_half_life_hours=self.decay_rates[SignalType.EARNINGS_SURPRISE]
             )
             
         except Exception as e:
@@ -351,7 +443,7 @@ class SignalCombiner:
                 urgency=signal.unusual_activity_score,
                 timestamp=signal.timestamp,
                 raw_data=asdict(signal),
-                decay_half_life_hours=8.0  # Options signals decay moderately fast
+                decay_half_life_hours=self.decay_rates[SignalType.OPTIONS_FLOW]
             )
             
         except Exception as e:
@@ -400,7 +492,7 @@ class SignalCombiner:
                     'volume_factor': volume_factor,
                     'current_price': current_price
                 },
-                decay_half_life_hours=12.0
+                decay_half_life_hours=self.decay_rates[SignalType.TECHNICAL_MOMENTUM]
             )
             
         except Exception as e:
@@ -417,7 +509,8 @@ class SignalCombiner:
         # Remove old signals of same type (keep only latest)
         self.signal_cache[ticker] = [
             s for s in self.signal_cache[ticker]
-            if s.signal_type != signal.signal_type
+            if s.signal_type != signal.signal_type or 
+            (datetime.now() - s.timestamp).total_seconds() > 3600  # Keep if older than 1 hour
         ]
         
         # Add new signal
@@ -430,6 +523,167 @@ class SignalCombiner:
                 key=lambda x: x.timestamp, 
                 reverse=True
             )[:10]
+    
+    def calculate_dynamic_confidence(self, signal: NormalizedSignal) -> float:
+        """Calculate dynamic confidence score for a signal."""
+        base_confidence = signal.confidence
+        signal_type = signal.signal_type
+        
+        # Get performance history for this signal type
+        performance_data = self.signal_performance_history.get(signal_type, {})
+        recent_accuracy = performance_data.get('recent_accuracy', 0.5)
+        
+        # Adjust confidence based on recent performance
+        performance_multiplier = 0.5 + (recent_accuracy * 1.0)  # 0.5 to 1.5 range
+        
+        # Apply signal-specific confidence factors
+        if signal_type == SignalType.SOCIAL_SENTIMENT:
+            # Higher confidence for signals from high-influence accounts
+            influence_boost = min(signal.raw_data.get('followers', 0) / 1000000, 0.3)
+            base_confidence += influence_boost
+            
+        elif signal_type == SignalType.NEWS_SENTIMENT:
+            # Higher confidence for urgent breaking news
+            urgency_boost = signal.urgency * 0.2
+            base_confidence += urgency_boost
+            
+        elif signal_type == SignalType.EARNINGS_SURPRISE:
+            # Higher confidence for large surprises
+            surprise_magnitude = abs(signal.raw_data.get('surprise_percent', 0))
+            magnitude_boost = min(surprise_magnitude / 20, 0.3)  # Cap at 20% surprise
+            base_confidence += magnitude_boost
+        
+        # Apply performance multiplier and cap at 1.0
+        final_confidence = min(base_confidence * performance_multiplier, 1.0)
+        
+        return final_confidence
+    
+    def calculate_dynamic_weights(self, signals: List[NormalizedSignal]) -> Dict[SignalType, float]:
+        """Calculate dynamic weights based on signal confidence and performance."""
+        current_time = datetime.now()
+        
+        # Start with base weights
+        dynamic_weights = self.base_weights.copy()
+        
+        # Group signals by type
+        signal_groups = {}
+        for signal in signals:
+            signal_type = signal.signal_type
+            if signal_type not in signal_groups:
+                signal_groups[signal_type] = []
+            signal_groups[signal_type].append(signal)
+        
+        # Calculate confidence-adjusted weights
+        total_confidence_weight = 0
+        confidence_weights = {}
+        
+        for signal_type in dynamic_weights.keys():
+            if signal_type not in signal_groups:
+                confidence_weights[signal_type] = 0
+                continue
+                
+            signal_list = signal_groups[signal_type]
+            
+            # Average confidence for this signal type (with decay)
+            if signal_list:
+                avg_confidence = sum(
+                    self.calculate_dynamic_confidence(s) * s.get_decayed_confidence(current_time)
+                    for s in signal_list
+                ) / len(signal_list)
+            else:
+                avg_confidence = 0
+            
+            # Weight by base weight * confidence
+            confidence_weights[signal_type] = dynamic_weights[signal_type] * avg_confidence
+            total_confidence_weight += confidence_weights[signal_type]
+        
+        # Normalize weights to sum to 1
+        if total_confidence_weight > 0:
+            for signal_type in confidence_weights:
+                dynamic_weights[signal_type] = confidence_weights[signal_type] / total_confidence_weight
+        
+        # Apply regime adjustments
+        regime_adjustments = MARKET_REGIMES['regime_adjustments'].get(self.market_regime, {})
+        if regime_adjustments:
+            # Blend regime adjustments with confidence-based weights
+            for signal_type in dynamic_weights:
+                if signal_type == SignalType.SOCIAL_SENTIMENT:
+                    regime_weight = regime_adjustments.get('social_weight', dynamic_weights[signal_type])
+                elif signal_type == SignalType.TECHNICAL_MOMENTUM:
+                    regime_weight = regime_adjustments.get('technical_weight', dynamic_weights[signal_type])
+                else:
+                    continue  # Keep confidence-based weight
+                
+                # Blend: 70% confidence-based, 30% regime-based
+                dynamic_weights[signal_type] = (
+                    0.7 * dynamic_weights[signal_type] + 
+                    0.3 * regime_weight
+                )
+        
+        # Final normalization
+        total_weight = sum(dynamic_weights.values())
+        if total_weight > 0:
+            dynamic_weights = {k: v/total_weight for k, v in dynamic_weights.items()}
+        
+        return dynamic_weights
+    
+    def detect_signal_conflicts(self, signals: List[NormalizedSignal]) -> List[str]:
+        """Detect conflicting signals and return conflict descriptions."""
+        conflicts = []
+        current_time = datetime.now()
+        
+        # Group signals by type and get decayed values
+        signal_values = {}
+        for signal in signals:
+            signal_type = signal.signal_type
+            decayed_value = signal.get_decayed_value(current_time)
+            
+            if signal_type not in signal_values:
+                signal_values[signal_type] = []
+            signal_values[signal_type].append(decayed_value)
+        
+        # Average values by signal type
+        avg_values = {}
+        for signal_type, values in signal_values.items():
+            if values:
+                avg_values[signal_type] = sum(values) / len(values)
+        
+        # Check for conflicts between signal types
+        sentiment_signals = [
+            SignalType.SOCIAL_SENTIMENT, 
+            SignalType.NEWS_SENTIMENT
+        ]
+        
+        fundamental_signals = [
+            SignalType.EARNINGS_SURPRISE
+        ]
+        
+        technical_signals = [
+            SignalType.TECHNICAL_MOMENTUM,
+            SignalType.OPTIONS_FLOW
+        ]
+        
+        # Check sentiment vs fundamental conflicts
+        if any(st in avg_values for st in sentiment_signals) and any(st in avg_values for st in fundamental_signals):
+            sentiment_avg = np.mean([avg_values.get(st, 0) for st in sentiment_signals if st in avg_values])
+            fundamental_avg = np.mean([avg_values.get(st, 0) for st in fundamental_signals if st in avg_values])
+            
+            if abs(sentiment_avg - fundamental_avg) > 0.5 and sentiment_avg * fundamental_avg < 0:
+                conflicts.append(f"Sentiment ({sentiment_avg:.2f}) vs Fundamental ({fundamental_avg:.2f}) conflict")
+        
+        # Check for internal sentiment conflicts
+        social_val = avg_values.get(SignalType.SOCIAL_SENTIMENT, 0)
+        news_val = avg_values.get(SignalType.NEWS_SENTIMENT, 0)
+        
+        if social_val != 0 and news_val != 0 and abs(social_val - news_val) > 0.4 and social_val * news_val < 0:
+            conflicts.append(f"Social ({social_val:.2f}) vs News ({news_val:.2f}) sentiment conflict")
+        
+        # Check options vs sentiment conflicts
+        options_val = avg_values.get(SignalType.OPTIONS_FLOW, 0)
+        if options_val != 0 and social_val != 0 and abs(options_val - social_val) > 0.6 and options_val * social_val < 0:
+            conflicts.append(f"Options ({options_val:.2f}) vs Social ({social_val:.2f}) conflict")
+        
+        return conflicts
     
     async def _update_market_regime(self):
         """Update market regime detection."""
@@ -455,9 +709,6 @@ class SignalCombiner:
                     else:
                         self.market_regime = "crisis"
                     
-                    # Update signal weights based on regime
-                    self._update_signal_weights()
-                    
                     logger.info(f"📊 Market regime: {self.market_regime} (VIX: {current_vix:.1f})")
                 
                 await asyncio.sleep(1800)  # Update every 30 minutes
@@ -465,23 +716,6 @@ class SignalCombiner:
             except Exception as e:
                 logger.error(f"Error updating market regime: {e}")
                 await asyncio.sleep(1800)
-    
-    def _update_signal_weights(self):
-        """Update signal weights based on market regime."""
-        regime_adjustments = MARKET_REGIMES['regime_adjustments'].get(self.market_regime, {})
-        
-        if regime_adjustments:
-            self.signal_weights = {
-                SignalType.SOCIAL_SENTIMENT: regime_adjustments.get('social_weight', 0.4),
-                SignalType.NEWS_SENTIMENT: regime_adjustments.get('social_weight', 0.4) * 0.5,  # Half of social
-                SignalType.EARNINGS_SURPRISE: 0.25,  # Keep earnings weight stable
-                SignalType.TECHNICAL_MOMENTUM: regime_adjustments.get('technical_weight', 0.3),
-                SignalType.OPTIONS_FLOW: 0.05
-            }
-            
-            # Normalize weights to sum to 1
-            total_weight = sum(self.signal_weights.values())
-            self.signal_weights = {k: v/total_weight for k, v in self.signal_weights.items()}
     
     async def _generate_combined_signals(self):
         """Generate combined signals for all tickers with sufficient data."""
@@ -500,28 +734,31 @@ class SignalCombiner:
                 await asyncio.sleep(60)
     
     async def _combine_signals_for_ticker(self, ticker: str) -> Optional[CombinedSignal]:
-        """Combine all signals for a specific ticker."""
+        """Enhanced signal combination with decay and conflict detection."""
         try:
             signals = self.signal_cache.get(ticker, [])
             
             if not signals:
                 return None
             
-            # Filter out expired signals
             current_time = datetime.now()
-            active_signals = []
             
+            # Filter out expired signals and apply decay
+            active_signals = []
             for signal in signals:
-                age_hours = (current_time - signal.timestamp).total_seconds() / 3600
-                decay_factor = 0.5 ** (age_hours / signal.decay_half_life_hours)
+                decayed_confidence = signal.get_decayed_confidence(current_time)
                 
-                if decay_factor > 0.1:  # Keep signals with >10% strength
-                    signal.value *= decay_factor
-                    signal.confidence *= decay_factor
+                if decayed_confidence > 0.1:  # Keep signals with >10% confidence
                     active_signals.append(signal)
             
             if not active_signals:
                 return None
+            
+            # Calculate dynamic weights
+            dynamic_weights = self.calculate_dynamic_weights(active_signals)
+            
+            # Detect conflicts
+            conflicts = self.detect_signal_conflicts(active_signals)
             
             # Calculate weighted combined score
             total_weighted_value = 0
@@ -530,12 +767,17 @@ class SignalCombiner:
             max_urgency = 0
             
             for signal in active_signals:
-                weight = self.signal_weights.get(signal.signal_type, 0.1)
-                confidence_weight = weight * signal.confidence
+                weight = dynamic_weights.get(signal.signal_type, 0.1)
+                decayed_value = signal.get_decayed_value(current_time)
+                decayed_confidence = signal.get_decayed_confidence(current_time)
+                dynamic_confidence = self.calculate_dynamic_confidence(signal)
                 
-                total_weighted_value += signal.value * confidence_weight
+                # Use dynamic confidence in weighting
+                confidence_weight = weight * dynamic_confidence
+                
+                total_weighted_value += decayed_value * confidence_weight
                 total_weight += confidence_weight
-                total_confidence += signal.confidence * weight
+                total_confidence += dynamic_confidence * weight
                 max_urgency = max(max_urgency, signal.urgency)
             
             if total_weight == 0:
@@ -543,10 +785,18 @@ class SignalCombiner:
             
             # Final combined score
             final_score = total_weighted_value / total_weight
-            overall_confidence = total_confidence / sum(self.signal_weights.values())
+            overall_confidence = total_confidence / sum(dynamic_weights.values()) if sum(dynamic_weights.values()) > 0 else 0
+            
+            # Apply conflict penalty
+            if conflicts:
+                conflict_penalty = min(len(conflicts) * 0.2, 0.6)  # Max 60% penalty
+                final_score *= (1 - conflict_penalty)
+                overall_confidence *= (1 - conflict_penalty * 0.5)  # Smaller confidence penalty
+                
+                logger.info(f"Signal conflicts detected for {ticker}: {conflicts}")
             
             # Calculate signal strength
-            signal_strength = self._calculate_signal_strength(active_signals, overall_confidence)
+            signal_strength = self._calculate_signal_strength(active_signals, overall_confidence, conflicts)
             
             # Determine action
             action = self._determine_action(final_score, signal_strength, overall_confidence)
@@ -572,30 +822,33 @@ class SignalCombiner:
                 entry_price_target=price_targets.get('entry'),
                 stop_loss_target=price_targets.get('stop_loss'),
                 take_profit_target=price_targets.get('take_profit'),
-                timestamp=current_time
+                timestamp=current_time,
+                signal_conflicts=conflicts,
+                dynamic_weights=dynamic_weights
             )
             
         except Exception as e:
             logger.error(f"Error combining signals for {ticker}: {e}")
             return None
     
-    def _calculate_signal_strength(self, signals: List[NormalizedSignal], confidence: float) -> float:
-        """Calculate overall signal strength."""
-        # Multiple signal types = higher strength
+    def _calculate_signal_strength(self, signals: List[NormalizedSignal], confidence: float, conflicts: List[str]) -> float:
+        """Enhanced signal strength calculation considering conflicts."""
+        # Base calculation
         signal_type_diversity = len(set(s.signal_type for s in signals)) / len(SignalType)
+        high_conf_signals = sum(1 for s in signals if self.calculate_dynamic_confidence(s) > 0.7)
+        high_conf_factor = min(high_conf_signals / len(signals), 1.0) if signals else 0
+        avg_urgency = sum(s.urgency for s in signals) / len(signals) if signals else 0
         
-        # High confidence signals
-        high_conf_signals = sum(1 for s in signals if s.confidence > 0.7)
-        high_conf_factor = min(high_conf_signals / len(signals), 1.0)
-        
-        # Urgency factor
-        avg_urgency = sum(s.urgency for s in signals) / len(signals)
-        
-        # Combine factors
+        # Base strength
         strength = (signal_type_diversity * 0.4 + 
                    high_conf_factor * 0.3 + 
                    confidence * 0.2 + 
                    avg_urgency * 0.1)
+        
+        # Apply conflict penalty
+        if conflicts:
+            conflict_penalty = min(len(conflicts) * 0.15, 0.5)  # Max 50% penalty
+            strength *= (1 - conflict_penalty)
         
         return min(strength, 1.0)
     
@@ -722,6 +975,14 @@ class SignalCombiner:
             logger.info(f"📈 SIGNAL: {signal.ticker} - {signal.action.value.upper()} "
                        f"(Score: {signal.final_score:.2f}, Strength: {signal.signal_strength:.2f})")
         
+        # Log conflicts if present
+        if signal.signal_conflicts:
+            logger.warning(f"⚠️  Conflicts detected: {', '.join(signal.signal_conflicts)}")
+        
+        # Log dynamic weights used
+        weights_str = ', '.join([f"{k.value}: {v:.2f}" for k, v in signal.dynamic_weights.items() if v > 0])
+        logger.info(f"🎚️  Dynamic weights: {weights_str}")
+        
         # Send to execution engine
         await self._send_to_execution_engine(signal)
     
@@ -768,6 +1029,33 @@ class SignalCombiner:
         
         return list(set(cached_tickers + common_tickers))
     
+    def update_signal_performance(self, signal_type: SignalType, was_correct: bool):
+        """Update performance tracking for dynamic weighting."""
+        if signal_type not in self.signal_performance_history:
+            self.signal_performance_history[signal_type] = {
+                'total_signals': 0,
+                'correct_signals': 0,
+                'recent_accuracy': 0.5,
+                'recent_results': []  # Last 20 results
+            }
+        
+        performance = self.signal_performance_history[signal_type]
+        performance['total_signals'] += 1
+        
+        if was_correct:
+            performance['correct_signals'] += 1
+        
+        # Track recent results (rolling window)
+        performance['recent_results'].append(was_correct)
+        if len(performance['recent_results']) > 20:
+            performance['recent_results'] = performance['recent_results'][-20:]
+        
+        # Calculate recent accuracy
+        if performance['recent_results']:
+            performance['recent_accuracy'] = sum(performance['recent_results']) / len(performance['recent_results'])
+        
+        logger.info(f"Updated {signal_type.value} performance: {performance['recent_accuracy']:.2f} accuracy")
+    
     def get_final_signal(self, ticker: str) -> Optional[CombinedSignal]:
         """Get the latest combined signal for a ticker."""
         # This would be called by your main trading logic
@@ -790,8 +1078,16 @@ class SignalCombiner:
         return signals
     
     def get_signal_summary(self) -> Dict:
-        """Get summary of current signal state."""
+        """Enhanced signal summary with performance metrics."""
         all_signals = self.get_all_active_signals()
+        
+        # Performance summary
+        performance_summary = {}
+        for signal_type, perf_data in self.signal_performance_history.items():
+            performance_summary[signal_type.value] = {
+                'accuracy': perf_data.get('recent_accuracy', 0.5),
+                'total_signals': perf_data.get('total_signals', 0)
+            }
         
         return {
             'total_signals': len(all_signals),
@@ -800,8 +1096,76 @@ class SignalCombiner:
             'sell': len([s for s in all_signals if s.action == TradeAction.SELL]),
             'strong_sell': len([s for s in all_signals if s.action == TradeAction.STRONG_SELL]),
             'market_regime': self.market_regime,
-            'signal_weights': self.signal_weights,
-            'top_signals': all_signals[:5]
+            'base_weights': self.base_weights,
+            'performance_summary': performance_summary,
+            'top_signals': all_signals[:5],
+            'signals_with_conflicts': len([s for s in all_signals if s.signal_conflicts]),
+            'component_availability': {
+                'twitter': TWITTER_AVAILABLE,
+                'news': NEWS_AVAILABLE,
+                'earnings': EARNINGS_AVAILABLE,
+                'options': OPTIONS_AVAILABLE
+            }
+        }
+    
+    def get_ticker_sentiment_summary(self, ticker: str) -> Dict:
+        """Get comprehensive sentiment summary for a specific ticker."""
+        signals = self.signal_cache.get(ticker, [])
+        
+        if not signals:
+            return {
+                'overall_sentiment': 'neutral',
+                'signal_count': 0,
+                'confidence': 0.0,
+                'latest_action': 'hold'
+            }
+        
+        # Get current combined signal
+        combined_signal = asyncio.run(self._combine_signals_for_ticker(ticker))
+        
+        # Aggregate by signal type
+        signal_breakdown = {}
+        current_time = datetime.now()
+        
+        for signal in signals:
+            signal_type = signal.signal_type.value
+            if signal_type not in signal_breakdown:
+                signal_breakdown[signal_type] = []
+            
+            # Apply decay
+            decayed_value = signal.get_decayed_value(current_time)
+            decayed_confidence = signal.get_decayed_confidence(current_time)
+            
+            if decayed_confidence > 0.1:  # Only include non-expired signals
+                signal_breakdown[signal_type].append({
+                    'value': decayed_value,
+                    'confidence': decayed_confidence,
+                    'timestamp': signal.timestamp,
+                    'urgency': signal.urgency
+                })
+        
+        # Calculate averages by signal type
+        signal_averages = {}
+        for signal_type, type_signals in signal_breakdown.items():
+            if type_signals:
+                avg_value = sum(s['value'] for s in type_signals) / len(type_signals)
+                avg_confidence = sum(s['confidence'] for s in type_signals) / len(type_signals)
+                signal_averages[signal_type] = {
+                    'average_value': avg_value,
+                    'average_confidence': avg_confidence,
+                    'signal_count': len(type_signals)
+                }
+        
+        return {
+            'overall_sentiment': combined_signal.action.value if combined_signal else 'hold',
+            'final_score': combined_signal.final_score if combined_signal else 0.0,
+            'confidence': combined_signal.confidence if combined_signal else 0.0,
+            'signal_strength': combined_signal.signal_strength if combined_signal else 0.0,
+            'signal_count': len(signals),
+            'conflicts': combined_signal.signal_conflicts if combined_signal else [],
+            'signal_breakdown': signal_averages,
+            'dynamic_weights': combined_signal.dynamic_weights if combined_signal else {},
+            'last_updated': current_time
         }
 
 # Global instance

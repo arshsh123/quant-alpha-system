@@ -1,4 +1,4 @@
-"""Main orchestrator for the Quant Alpha trading system."""
+"""Main orchestrator with enhanced error handling and missing component management."""
 
 import asyncio
 import logging
@@ -10,13 +10,46 @@ import json
 import traceback
 from pathlib import Path
 
-# Configure logging
+# Configure logging first
 from config.settings import LOGGING_CONFIG, TRADING_TIMEZONE
 from signal_processing.signal_combiner import signal_combiner
-from data_sources.social_sentiment.twitter_monitor import twitter_monitor
-from data_sources.social_sentiment.news_monitor import news_monitor
-from data_sources.earnings_signals.earnings_monitor import earnings_monitor
-from data_sources.options_flow.options_monitor import options_monitor
+
+# Import monitors with error handling
+try:
+    from data_sources.social_sentiment.twitter_monitor import twitter_monitor
+    TWITTER_AVAILABLE = True
+except Exception as e:
+    logger = logging.getLogger(__name__)
+    logger.warning(f"Twitter monitor not available: {e}")
+    twitter_monitor = None
+    TWITTER_AVAILABLE = False
+
+try:
+    from data_sources.social_sentiment.news_monitor import news_monitor
+    NEWS_AVAILABLE = True
+except Exception as e:
+    logger = logging.getLogger(__name__)
+    logger.warning(f"News monitor not available: {e}")
+    news_monitor = None
+    NEWS_AVAILABLE = False
+
+try:
+    from data_sources.earnings_signals.earnings_monitor import earnings_monitor
+    EARNINGS_AVAILABLE = True
+except Exception as e:
+    logger = logging.getLogger(__name__)
+    logger.warning(f"Earnings monitor not available: {e}")
+    earnings_monitor = None
+    EARNINGS_AVAILABLE = False
+
+try:
+    from data_sources.options_flow.options_monitor import options_monitor
+    OPTIONS_AVAILABLE = True
+except Exception as e:
+    logger = logging.getLogger(__name__)
+    logger.warning(f"Options monitor not available: {e}")
+    options_monitor = None
+    OPTIONS_AVAILABLE = False
 
 # Setup logging
 logging.basicConfig(
@@ -31,22 +64,38 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 class QuantAlphaSystem:
-    """Main orchestrator for the multi-signal trading system."""
+    """Main orchestrator with enhanced error handling."""
     
     def __init__(self):
         self.is_running = False
         self.startup_time = None
-        self.components = {
-            'twitter_monitor': twitter_monitor,
-            'news_monitor': news_monitor,
-            'earnings_monitor': earnings_monitor,
-            'options_monitor': options_monitor,
-            'signal_combiner': signal_combiner
-        }
+        self.components = self._initialize_available_components()
         self.health_status = {}
+        self.component_tasks = {}  # Track running tasks
+        
+    def _initialize_available_components(self):
+        """Initialize only available components."""
+        components = {}
+        
+        if TWITTER_AVAILABLE and twitter_monitor:
+            components['twitter_monitor'] = twitter_monitor
+        
+        if NEWS_AVAILABLE and news_monitor:
+            components['news_monitor'] = news_monitor
+            
+        if EARNINGS_AVAILABLE and earnings_monitor:
+            components['earnings_monitor'] = earnings_monitor
+            
+        if OPTIONS_AVAILABLE and options_monitor:
+            components['options_monitor'] = options_monitor
+            
+        components['signal_combiner'] = signal_combiner
+        
+        logger.info(f"✅ Initialized {len(components)} components: {list(components.keys())}")
+        return components
         
     async def start(self):
-        """Start the complete trading system."""
+        """Start the complete trading system with enhanced error handling."""
         try:
             self.startup_time = datetime.now()
             logger.info("🚀 Starting Quant Alpha Trading System...")
@@ -87,49 +136,91 @@ class QuantAlphaSystem:
         # Check market hours
         market_status = self._check_market_status()
         
-        # Check disk space and memory
+        # Check system resources
         system_checks = self._check_system_resources()
+        
+        # Check component availability
+        component_status = self._check_component_availability()
         
         # Log results
         logger.info(f"✅ API Keys: {sum(api_checks.values())}/{len(api_checks)} available")
         logger.info(f"📊 Market Status: {market_status}")
         logger.info(f"💻 System Resources: {system_checks}")
+        logger.info(f"🔧 Components: {component_status}")
         
         if not any(api_checks.values()):
             logger.warning("⚠️  No API keys available - running in limited mode")
+            
+        if len(self.components) < 2:
+            logger.error("❌ Insufficient components available - need at least 2")
+            raise RuntimeError("Insufficient components for operation")
+    
+    def _check_component_availability(self) -> str:
+        """Check which components are available."""
+        available = []
+        missing = []
+        
+        if TWITTER_AVAILABLE:
+            available.append("Twitter")
+        else:
+            missing.append("Twitter")
+            
+        if NEWS_AVAILABLE:
+            available.append("News")
+        else:
+            missing.append("News")
+            
+        if EARNINGS_AVAILABLE:
+            available.append("Earnings")
+        else:
+            missing.append("Earnings")
+            
+        if OPTIONS_AVAILABLE:
+            available.append("Options")
+        else:
+            missing.append("Options")
+        
+        status = f"Available: {', '.join(available)}"
+        if missing:
+            status += f" | Missing: {', '.join(missing)}"
+            
+        return status
     
     async def _check_api_keys(self) -> Dict[str, bool]:
         """Check availability of API keys."""
         try:
-            from config.api_keys import (
-                TWITTER_BEARER_TOKEN, OPENAI_API_KEY
-            )
+            api_status = {}
             
-            # Check optional APIs
-            api_status = {
-                'twitter': bool(TWITTER_BEARER_TOKEN),
-                'openai': bool(OPENAI_API_KEY)
-            }
+            # Check Twitter API
+            if TWITTER_AVAILABLE:
+                try:
+                    from config.api_keys import TWITTER_BEARER_TOKEN
+                    api_status['twitter'] = bool(TWITTER_BEARER_TOKEN)
+                except ImportError:
+                    api_status['twitter'] = False
+            else:
+                api_status['twitter'] = False
             
-            # Check free tier APIs if available
+            # Check financial APIs
             try:
-                from config.api_keys import FMP_API_KEY, IEX_API_KEY
+                from config.api_keys import FMP_API_KEY, ALPHA_VANTAGE_KEY
                 api_status['fmp'] = bool(FMP_API_KEY)
-                api_status['iex'] = bool(IEX_API_KEY)
+                api_status['alpha_vantage'] = bool(ALPHA_VANTAGE_KEY)
             except ImportError:
-                pass
+                api_status['fmp'] = False
+                api_status['alpha_vantage'] = False
             
-            # Check Reddit API
+            # Check AI APIs
             try:
-                from config.api_keys import REDDIT_CLIENT_ID, REDDIT_CLIENT_SECRET
-                api_status['reddit'] = bool(REDDIT_CLIENT_ID and REDDIT_CLIENT_SECRET)
+                from config.api_keys import OPENAI_API_KEY
+                api_status['openai'] = bool(OPENAI_API_KEY)
             except ImportError:
-                api_status['reddit'] = False
+                api_status['openai'] = False
             
             return api_status
             
-        except ImportError as e:
-            logger.error(f"Error importing API keys: {e}")
+        except Exception as e:
+            logger.error(f"Error checking API keys: {e}")
             return {'error': False}
     
     def _check_market_status(self) -> str:
@@ -178,79 +269,116 @@ class QuantAlphaSystem:
         except ImportError:
             return {'status': 'psutil not available'}
     
+    async def safe_component_wrapper(self, component_name: str, component_func):
+        """Safely run a component with error handling and restart capability."""
+        restart_count = 0
+        max_restarts = 5
+        
+        while self.is_running and restart_count < max_restarts:
+            try:
+                logger.info(f"🔧 Starting {component_name}...")
+                await component_func()
+                
+            except Exception as e:
+                restart_count += 1
+                logger.error(f"❌ {component_name} crashed (attempt {restart_count}/{max_restarts}): {e}")
+                
+                if restart_count < max_restarts:
+                    wait_time = min(60 * restart_count, 300)  # Exponential backoff, max 5 min
+                    logger.info(f"⏳ Restarting {component_name} in {wait_time} seconds...")
+                    await asyncio.sleep(wait_time)
+                else:
+                    logger.error(f"💀 {component_name} failed permanently, marking as unhealthy")
+                    self.health_status[component_name] = False
+                    break
+    
     async def _start_all_components(self):
-        """Start all system components."""
+        """Start all available components with error handling."""
         logger.info("🔧 Starting system components...")
         
-        # Start components in order of dependency
         startup_tasks = []
         
-        # 1. Start data collection components
-        startup_tasks.append(self._start_twitter_monitoring())
-        startup_tasks.append(self._start_news_monitoring())
-        startup_tasks.append(self._start_earnings_monitoring())
-        startup_tasks.append(self._start_options_monitoring())
+        # Start available data collection components
+        if 'twitter_monitor' in self.components:
+            task = asyncio.create_task(
+                self.safe_component_wrapper('twitter_monitor', self._start_twitter_monitoring)
+            )
+            startup_tasks.append(task)
+            self.component_tasks['twitter_monitor'] = task
         
-        # 2. Start signal processing
-        startup_tasks.append(self._start_signal_processing())
+        if 'news_monitor' in self.components:
+            task = asyncio.create_task(
+                self.safe_component_wrapper('news_monitor', self._start_news_monitoring)
+            )
+            startup_tasks.append(task)
+            self.component_tasks['news_monitor'] = task
+            
+        if 'earnings_monitor' in self.components:
+            task = asyncio.create_task(
+                self.safe_component_wrapper('earnings_monitor', self._start_earnings_monitoring)
+            )
+            startup_tasks.append(task)
+            self.component_tasks['earnings_monitor'] = task
+            
+        if 'options_monitor' in self.components:
+            task = asyncio.create_task(
+                self.safe_component_wrapper('options_monitor', self._start_options_monitoring)
+            )
+            startup_tasks.append(task)
+            self.component_tasks['options_monitor'] = task
         
-        # 3. Start health monitoring
-        startup_tasks.append(self._start_health_monitoring())
+        # Start signal processing
+        task = asyncio.create_task(
+            self.safe_component_wrapper('signal_combiner', self._start_signal_processing)
+        )
+        startup_tasks.append(task)
+        self.component_tasks['signal_combiner'] = task
         
-        # 4. Start main control loop
-        startup_tasks.append(self._start_main_loop())
+        # Start monitoring tasks
+        startup_tasks.append(asyncio.create_task(self._start_health_monitoring()))
+        startup_tasks.append(asyncio.create_task(self._start_main_loop()))
         
         # Run all components concurrently
-        await asyncio.gather(*startup_tasks, return_exceptions=True)
+        try:
+            await asyncio.gather(*startup_tasks, return_exceptions=True)
+        except Exception as e:
+            logger.error(f"Error in component startup: {e}")
     
     async def _start_twitter_monitoring(self):
         """Start Twitter monitoring component."""
-        try:
-            logger.info("🐦 Starting Twitter monitoring...")
+        if twitter_monitor:
             async with twitter_monitor:
                 await twitter_monitor.start_monitoring()
-        except Exception as e:
-            logger.error(f"❌ Twitter monitoring failed: {e}")
-            self.health_status['twitter'] = False
+        else:
+            logger.warning("Twitter monitor not available")
     
     async def _start_news_monitoring(self):
         """Start news monitoring component."""
-        try:
-            logger.info("📰 Starting news monitoring...")
+        if news_monitor:
             async with news_monitor:
                 await news_monitor.start_monitoring()
-        except Exception as e:
-            logger.error(f"❌ News monitoring failed: {e}")
-            self.health_status['news'] = False
+        else:
+            logger.warning("News monitor not available")
     
     async def _start_earnings_monitoring(self):
         """Start earnings monitoring component."""
-        try:
-            logger.info("📈 Starting earnings monitoring...")
+        if earnings_monitor:
             async with earnings_monitor:
                 await earnings_monitor.start_monitoring()
-        except Exception as e:
-            logger.error(f"❌ Earnings monitoring failed: {e}")
-            self.health_status['earnings'] = False
+        else:
+            logger.warning("Earnings monitor not available")
     
     async def _start_options_monitoring(self):
         """Start options monitoring component."""
-        try:
-            logger.info("📊 Starting options monitoring...")
+        if options_monitor:
             async with options_monitor:
                 await options_monitor.start_monitoring()
-        except Exception as e:
-            logger.error(f"❌ Options monitoring failed: {e}")
-            self.health_status['options'] = False
+        else:
+            logger.warning("Options monitor not available")
     
     async def _start_signal_processing(self):
         """Start signal processing component."""
-        try:
-            logger.info("🔄 Starting signal processing engine...")
-            await signal_combiner.start_processing()
-        except Exception as e:
-            logger.error(f"❌ Signal processing failed: {e}")
-            self.health_status['signal_combiner'] = False
+        await signal_combiner.start_processing()
     
     async def _start_health_monitoring(self):
         """Start health monitoring."""
@@ -308,24 +436,68 @@ class QuantAlphaSystem:
         logger.info(f"   Buy/Sell: {signal_summary.get('buy', 0)}/{signal_summary.get('sell', 0)}")
         logger.info(f"   Strong: {signal_summary.get('strong_buy', 0)}/{signal_summary.get('strong_sell', 0)}")
         logger.info(f"   Market Regime: {signal_summary.get('market_regime', 'unknown')}")
+        logger.info(f"   Conflicts: {signal_summary.get('signals_with_conflicts', 0)} signals with conflicts")
         
         # Log component health
         healthy_components = sum(1 for status in self.health_status.values() if status)
         total_components = len(self.components)
         logger.info(f"   Component Health: {healthy_components}/{total_components}")
+        
+        # Log performance metrics if available
+        performance_summary = signal_summary.get('performance_summary', {})
+        if performance_summary:
+            logger.info("   Signal Performance:")
+            for signal_type, metrics in performance_summary.items():
+                accuracy = metrics.get('accuracy', 0.5)
+                total = metrics.get('total_signals', 0)
+                logger.info(f"     {signal_type}: {accuracy:.2f} accuracy ({total} signals)")
     
     async def _process_strong_signals(self, strong_signals: List):
         """Process strong trading signals."""
         for signal in strong_signals:
             logger.warning(f"⚡ PROCESSING STRONG SIGNAL: {signal.ticker} - {signal.action.value}")
             
-            # Here you would integrate with your execution engine
-            # For now, just log the signal details
+            # Log signal details
             logger.info(f"   Score: {signal.final_score:.3f}")
             logger.info(f"   Confidence: {signal.confidence:.3f}")
             logger.info(f"   Position Size: {signal.position_size_suggestion:.3f}")
+            logger.info(f"   Signal Strength: {signal.signal_strength:.3f}")
+            
+            if hasattr(signal, 'signal_conflicts') and signal.signal_conflicts:
+                logger.warning(f"   ⚠️  Conflicts: {', '.join(signal.signal_conflicts)}")
+            
+            if hasattr(signal, 'dynamic_weights') and signal.dynamic_weights:
+                weights_str = ', '.join([f"{k.value}: {v:.2f}" for k, v in signal.dynamic_weights.items()])
+                logger.info(f"   Weights Used: {weights_str}")
+            
             if hasattr(signal, 'entry_price_target') and signal.entry_price_target:
                 logger.info(f"   Entry Target: ${signal.entry_price_target:.2f}")
+                
+            if hasattr(signal, 'stop_loss_target') and signal.stop_loss_target:
+                logger.info(f"   Stop Loss: ${signal.stop_loss_target:.2f}")
+                
+            # Here you would integrate with your execution engine
+            await self._send_to_execution_engine(signal)
+    
+    async def _send_to_execution_engine(self, signal):
+        """Send signal to execution engine."""
+        logger.info(f"📤 Sending to execution: {signal.ticker} - {signal.action.value}")
+        
+        # Placeholder for execution engine integration
+        execution_data = {
+            'ticker': signal.ticker,
+            'action': signal.action.value,
+            'quantity': signal.position_size_suggestion,
+            'entry_price': getattr(signal, 'entry_price_target', None),
+            'stop_loss': getattr(signal, 'stop_loss_target', None),
+            'take_profit': getattr(signal, 'take_profit_target', None),
+            'confidence': signal.confidence,
+            'timestamp': signal.timestamp,
+            'signal_id': f"{signal.ticker}_{signal.timestamp.strftime('%Y%m%d_%H%M%S')}"
+        }
+        
+        # Log the execution order (in production, this would go to broker)
+        logger.info(f"📋 EXECUTION ORDER: {json.dumps(execution_data, default=str, indent=2)}")
     
     async def _run_health_checks(self):
         """Run comprehensive health checks."""
@@ -355,6 +527,9 @@ class QuantAlphaSystem:
             # Check signal freshness
             await self._check_signal_freshness()
             
+            # Check for stuck components
+            await self._check_component_tasks()
+            
         except Exception as e:
             logger.error(f"Error in health checks: {e}")
     
@@ -367,30 +542,60 @@ class QuantAlphaSystem:
                 logger.warning("⚠️  No active signals detected")
             
             # Check if we're getting new signals from each source
-            try:
-                # Twitter signals should be frequent during market hours
-                twitter_signals = twitter_monitor.get_current_signals()
-                if len(twitter_signals) == 0 and self._check_market_status() == "MARKET_OPEN":
-                    logger.warning("⚠️  No recent Twitter signals during market hours")
-            except Exception:
-                pass
+            market_status = self._check_market_status()
             
-            try:
-                # News signals should be regular
-                news_signals = news_monitor.get_current_signals()
-                if len(news_signals) == 0:
-                    logger.info("ℹ️  No recent news signals (may be normal)")
-            except Exception:
-                pass
+            if TWITTER_AVAILABLE and twitter_monitor:
+                try:
+                    twitter_signals = twitter_monitor.get_current_signals()
+                    if len(twitter_signals) == 0 and market_status == "MARKET_OPEN":
+                        logger.warning("⚠️  No recent Twitter signals during market hours")
+                except Exception:
+                    pass
+            
+            if NEWS_AVAILABLE and news_monitor:
+                try:
+                    news_signals = news_monitor.get_current_signals()
+                    if len(news_signals) == 0:
+                        logger.info("ℹ️  No recent news signals (may be normal)")
+                except Exception:
+                    pass
+            
+            if OPTIONS_AVAILABLE and options_monitor:
+                try:
+                    options_signals = options_monitor.get_current_signals()
+                    logger.info(f"📊 Options signals: {len(options_signals)} active")
+                except Exception:
+                    pass
                 
         except Exception as e:
             logger.error(f"Error checking signal freshness: {e}")
+    
+    async def _check_component_tasks(self):
+        """Check if component tasks are still running."""
+        for component_name, task in self.component_tasks.items():
+            if task.done():
+                if task.exception():
+                    logger.error(f"💀 {component_name} task died with exception: {task.exception()}")
+                else:
+                    logger.warning(f"⚠️  {component_name} task completed unexpectedly")
+                
+                self.health_status[component_name] = False
     
     async def shutdown(self):
         """Gracefully shutdown the system."""
         logger.info("🛑 Initiating system shutdown...")
         
         self.is_running = False
+        
+        # Cancel all component tasks
+        for component_name, task in self.component_tasks.items():
+            if not task.done():
+                logger.info(f"🛑 Cancelling {component_name} task...")
+                task.cancel()
+                try:
+                    await asyncio.wait_for(task, timeout=5.0)
+                except (asyncio.CancelledError, asyncio.TimeoutError):
+                    pass
         
         # Save current state
         await self._save_system_state()
@@ -415,13 +620,20 @@ class QuantAlphaSystem:
                 'uptime_seconds': (datetime.now() - self.startup_time).total_seconds() if self.startup_time else 0,
                 'health_status': self.health_status,
                 'signal_summary': signal_summary,
+                'component_availability': {
+                    'twitter': TWITTER_AVAILABLE,
+                    'news': NEWS_AVAILABLE,
+                    'earnings': EARNINGS_AVAILABLE,
+                    'options': OPTIONS_AVAILABLE
+                },
                 'last_signals': [
                     {
                         'ticker': s.ticker,
                         'action': s.action.value if hasattr(s.action, 'value') else str(s.action),
                         'score': s.final_score,
                         'confidence': s.confidence,
-                        'timestamp': s.timestamp.isoformat()
+                        'timestamp': s.timestamp.isoformat(),
+                        'conflicts': getattr(s, 'signal_conflicts', [])
                     }
                     for s in all_signals[:10]
                 ]
@@ -468,7 +680,13 @@ class QuantAlphaSystem:
             'health_status': self.health_status,
             'signal_summary': signal_combiner.get_signal_summary(),
             'component_count': len(self.components),
-            'healthy_components': sum(1 for status in self.health_status.values() if status)
+            'healthy_components': sum(1 for status in self.health_status.values() if status),
+            'available_components': {
+                'twitter': TWITTER_AVAILABLE,
+                'news': NEWS_AVAILABLE,
+                'earnings': EARNINGS_AVAILABLE,
+                'options': OPTIONS_AVAILABLE
+            }
         }
 
 class TradingSystemCLI:
@@ -502,6 +720,8 @@ if __name__ == "__main__":
     parser.add_argument("--config", help="Custom config file path")
     parser.add_argument("--log-level", choices=["DEBUG", "INFO", "WARNING", "ERROR"], 
                        default="INFO", help="Logging level")
+    parser.add_argument("--components", help="Comma-separated list of components to enable",
+                       default="all")
     
     args = parser.parse_args()
     
@@ -511,15 +731,41 @@ if __name__ == "__main__":
     # Print startup banner
     print("""
 ╔═══════════════════════════════════════════════════════════════╗
-║                    QUANT ALPHA SYSTEM                        ║
-║                   Multi-Signal Trading Bot                   ║
+║                    QUANT ALPHA SYSTEM v2.0                   ║
+║              Enhanced Multi-Signal Trading Bot               ║
 ║                                                               ║
 ║  📊 Social Sentiment • 📰 News Analysis • 📈 Earnings        ║
-║  🎯 Multi-Signal Fusion • ⚡ Real-time Execution             ║
+║  📊 Options Flow • 🎯 Dynamic Signal Fusion • ⚡ Real-time   ║
+║                                                               ║
+║  ✨ NEW: Signal Decay • Conflict Detection • Smart Weights  ║
 ╚═══════════════════════════════════════════════════════════════╝
     """)
     
     logger.info(f"🚀 Starting in {args.mode.upper()} mode")
+    
+    # Component availability status
+    components_status = []
+    if TWITTER_AVAILABLE:
+        components_status.append("✅ Twitter")
+    else:
+        components_status.append("❌ Twitter")
+        
+    if NEWS_AVAILABLE:
+        components_status.append("✅ News")
+    else:
+        components_status.append("❌ News")
+        
+    if EARNINGS_AVAILABLE:
+        components_status.append("✅ Earnings")
+    else:
+        components_status.append("❌ Earnings")
+        
+    if OPTIONS_AVAILABLE:
+        components_status.append("✅ Options")
+    else:
+        components_status.append("❌ Options")
+    
+    logger.info(f"📦 Component Status: {' | '.join(components_status)}")
     
     # Start the system
     cli = TradingSystemCLI()
