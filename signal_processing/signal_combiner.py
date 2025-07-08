@@ -1061,26 +1061,58 @@ class SignalCombiner:
         # This would be called by your main trading logic
         return asyncio.run(self._combine_signals_for_ticker(ticker))
     
-    def get_all_active_signals(self) -> List[CombinedSignal]:
-        """Get all current active combined signals."""
-        signals = []
-        
-        for ticker in self.signal_cache.keys():
-            try:
-                combined = asyncio.run(self._combine_signals_for_ticker(ticker))
-                if combined and combined.action != TradeAction.HOLD:
-                    signals.append(combined)
-            except Exception as e:
-                logger.error(f"Error getting signal for {ticker}: {e}")
-        
-        # Sort by signal strength
-        signals.sort(key=lambda x: x.signal_strength, reverse=True)
-        return signals
+def get_all_active_signals(self) -> List[CombinedSignal]:
+    """Get all current active combined signals."""
+    signals = []
+    
+    for ticker in self.signal_cache.keys():
+        try:
+            # Use the cached signals instead of calling async method
+            if ticker in self.signal_cache and self.signal_cache[ticker]:
+                cached_signals = self.signal_cache[ticker]
+                if cached_signals:
+                    # Get the latest signal value
+                    latest_signal = max(cached_signals, key=lambda x: x.timestamp)
+                    
+                    # Simple combination for synchronous access
+                    combined_value = latest_signal.get_decayed_value()
+                    combined_confidence = latest_signal.get_decayed_confidence()
+                    
+                    if abs(combined_value) > 0.3 and combined_confidence > 0.4:
+                        # Create a basic combined signal
+                        action = TradeAction.BUY if combined_value > 0.6 else TradeAction.SELL if combined_value < -0.6 else TradeAction.HOLD
+                        
+                        if action != TradeAction.HOLD:
+                            # Create a proper CombinedSignal object
+                            signal = CombinedSignal(
+                                ticker=ticker,
+                                final_score=combined_value,
+                                confidence=combined_confidence,
+                                action=action,
+                                signal_strength=abs(combined_value) * combined_confidence,
+                                contributing_signals=[latest_signal],
+                                risk_adjusted_score=combined_value,
+                                position_size_suggestion=0.02,  # Default 2%
+                                entry_price_target=None,
+                                stop_loss_target=None,
+                                take_profit_target=None,
+                                timestamp=latest_signal.timestamp,
+                                signal_conflicts=[],
+                                dynamic_weights={}
+                            )
+                            signals.append(signal)
+                            
+        except Exception as e:
+            logger.error(f"Error getting signal for {ticker}: {e}")
+    
+    # Sort by signal strength
+    signals.sort(key=lambda x: x.signal_strength, reverse=True)
+    return signals
     
     def get_signal_summary(self) -> Dict:
         """Enhanced signal summary with performance metrics."""
         all_signals = self.get_all_active_signals()
-        
+            
         # Performance summary
         performance_summary = {}
         for signal_type, perf_data in self.signal_performance_history.items():
